@@ -1,0 +1,4 @@
+admin,admin123,admin
+pharmacist1,pharm123,pharmacist
+supplier1,supp123,supplier
+new_api_user,123,supplier

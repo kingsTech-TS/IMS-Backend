@@ -1,0 +1,14 @@
+[2026-01-21 11:44:39] User admin logged in as admin
+[2026-01-21 11:45:21] Added medicine: Oxin
+[2026-01-21 11:45:44] Added medicine: paracitamol
+[2026-01-21 11:49:34] User admin logged in as admin
+[2026-01-21 11:50:05] Admin added new user: me (pharmacist)
+[2026-01-21 12:34:40] User admin logged in as admin
+[2026-01-21 12:40:36] User admin logged in as admin
+[2026-01-21 12:41:01] User supplier1 logged in as supplier
+[2026-01-21 12:42:50] User admin logged in as admin
+[2026-01-21 12:42:50] Admin added new user: testuser (pharmacist)
+[2026-01-21 12:53:17] User admin logged in as admin
+[2026-01-21 13:01:47] User admin logged in as admin
+[2026-01-21 13:01:47] User pharmacist1 logged in as pharmacist
+[2026-01-21 13:01:47] Admin added new user: new_api_user (supplier)
