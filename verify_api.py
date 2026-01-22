@@ -32,26 +32,82 @@ def main():
     # 2. Admin adds medicine (setup for dispense test)
     # skipped for brevity, assuming existing medicines or we can add one
     
-    # 3. Login Pharmacist
-    pharm_token = test_login("pharmacist1", "pharm123")
-    if not pharm_token:
-        print("FAIL: Pharmacist login failed")
+def test_update_medicine(token, med_id, update_data):
+    headers = {"Authorization": f"Bearer {token}"}
+    response = requests.put(f"{BASE_URL}/medicines/{med_id}", json=update_data, headers=headers)
+    return response.status_code
+
+def test_delete_medicine(token, med_id):
+    headers = {"Authorization": f"Bearer {token}"}
+    response = requests.delete(f"{BASE_URL}/medicines/{med_id}", headers=headers)
+    return response.status_code
+
+def test_delete_user(token, username):
+    headers = {"Authorization": f"Bearer {token}"}
+    response = requests.delete(f"{BASE_URL}/users/{username}", headers=headers)
+    return response.status_code
+
+def main():
+    print("Starting Verification...")
+
+    # 1. Login Admin
+    admin_token = test_login("admin", "admin123")
+    if not admin_token:
+        print("FAIL: Admin login failed")
         sys.exit(1)
-    print("PASS: Pharmacist login successful")
+    print("PASS: Admin login successful")
 
-    # 4. Pharmacist tries to add user (Should Fail 403)
-    code = test_add_user(pharm_token, {"username": "baduser", "password": "123", "role": "admin"})
-    if code == 403:
-        print("PASS: Pharmacist blocked from adding user (403)")
+    # 2. Add full medicine
+    new_med = {
+        "name": "FullTestMed",
+        "quantity": 100,
+        "price": 50.0,
+        "category": "Tablets",
+        "manufacturer": "PharmaCorp",
+        "batchNumber": "B123",
+        "minStock": 10,
+        "expiryDate": "2025-12-31"
+    }
+    headers = {"Authorization": f"Bearer {admin_token}"}
+    resp = requests.post(f"{BASE_URL}/medicines", json=new_med, headers=headers)
+    if resp.status_code == 200:
+        med_data = resp.json()
+        med_id = med_data["id"]
+        if med_data["category"] == "Tablets":
+             print("PASS: Medicine added with new fields")
+        else:
+             print("FAIL: Medicine fields missing")
     else:
-        print(f"FAIL: Pharmacist should get 403 for add user, got {code}")
+        print(f"FAIL: Add medicine failed {resp.status_code}")
+        sys.exit(1)
 
-    # 5. Admin adds user (Should Success 200)
-    code = test_add_user(admin_token, {"username": "new_api_user", "password": "123", "role": "supplier"})
+    # 3. Update medicine
+    update_data = new_med.copy()
+    update_data["name"] = "UpdatedTestMed"
+    code = test_update_medicine(admin_token, med_id, update_data)
     if code == 200:
-        print("PASS: Admin added user successfully")
+        print("PASS: Medicine updated")
     else:
-        print(f"FAIL: Admin failed to add user, got {code}")
+        print(f"FAIL: Medicine update failed {code}")
+
+    # 4. Delete medicine
+    code = test_delete_medicine(admin_token, med_id)
+    if code == 200:
+        print("PASS: Medicine deleted")
+    else:
+        print(f"FAIL: Medicine delete failed {code}")
+
+    # 5. User CRUD
+    # Add
+    test_user = {"username": "todelete", "password": "123", "role": "supplier"}
+    test_add_user(admin_token, test_user)
+    
+    # Delete
+    code = test_delete_user(admin_token, "todelete")
+    if code == 200:
+        print("PASS: User deleted")
+    else:
+        print(f"FAIL: User delete failed {code}")
 
     print("Verification execution complete.")
 

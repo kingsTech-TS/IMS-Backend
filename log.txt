@@ -12,3 +12,9 @@
 [2026-01-21 13:01:47] User admin logged in as admin
 [2026-01-21 13:01:47] User pharmacist1 logged in as pharmacist
 [2026-01-21 13:01:47] Admin added new user: new_api_user (supplier)
+[2026-01-21 19:50:23] User admin logged in as admin
+[2026-01-21 19:50:23] Added medicine: FullTestMed
+[2026-01-21 19:50:24] Updated medicine ID 3
+[2026-01-21 19:50:24] Deleted medicine ID 3
+[2026-01-21 19:50:24] Admin added new user: todelete (supplier)
+[2026-01-21 19:50:24] Admin deleted user: todelete

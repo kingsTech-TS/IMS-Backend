@@ -1,2 +1,2 @@
-1,Oxin,122,100.000000
-2,paracitamol,10000,20.000000
+1,Oxin,122,100.0,N/A,N/A,N/A,0,N/A,In Stock
+2,paracitamol,10000,20.0,N/A,N/A,N/A,0,N/A,In Stock
