@@ -74,10 +74,15 @@ def log_activity(activity: str):
     with open(LOG_FILE, "a") as f:
         f.write(f"[{get_timestamp()}] {activity}\n")
 
-def get_stock_status(quantity: int) -> str:
-    if quantity < 15:
+def get_stock_status(quantity: int, min_stock: int = 30) -> str:
+    # Use min_stock as threshold for Low Stock, half of it for Critical
+    # If min_stock is 0, default to current hardcoded values
+    low_threshold = min_stock if min_stock > 0 else 30
+    critical_threshold = low_threshold // 2 if low_threshold > 0 else 15
+    
+    if quantity < critical_threshold:
         return "Critical"
-    elif quantity < 30:
+    elif quantity < low_threshold:
         return "Low Stock"
     else:
         return "In Stock"
@@ -113,7 +118,8 @@ def load_medicines() -> List[Medicine]:
             for row in reader:
                 try:
                     qty = int(row["quantity"])
-                    stat = get_stock_status(qty) # Enforce dynamic status logic
+                    min_stk = int(row.get("minStock", 30))
+                    stat = get_stock_status(qty, min_stk) # Enforce dynamic status logic
                     meds.append(Medicine(
                         id=int(row["id"]),
                         name=row["name"],
@@ -135,7 +141,8 @@ def load_medicines() -> List[Medicine]:
                 if len(parts) >= 10:
                     try:
                         qty = int(parts[2])
-                        stat = get_stock_status(qty)
+                        min_stk = int(parts[7]) if len(parts) >= 8 else 30
+                        stat = get_stock_status(qty, min_stk)
                         meds.append(Medicine(
                             id=int(parts[0]),
                             name=parts[1],
@@ -154,7 +161,7 @@ def load_medicines() -> List[Medicine]:
                     # Very old format fallback
                     try:
                         qty = int(parts[2])
-                        stat = get_stock_status(qty)
+                        stat = get_stock_status(qty, 30)
                         meds.append(Medicine(
                             id=int(parts[0]),
                             name=parts[1],
@@ -174,7 +181,7 @@ def save_medicines(meds: List[Medicine]):
         writer.writeheader()
         for med in meds:
             # Update status before saving
-            med.status = get_stock_status(med.quantity)
+            med.status = get_stock_status(med.quantity, med.minStock)
             writer.writerow(med.dict())
 
 def load_users() -> List[User]:
@@ -273,41 +280,44 @@ async def export_medicines(format: str, current_user: User = Depends(get_current
         return response
 
     elif format.lower() == "pdf":
-        pdf = FPDF()
+        pdf = FPDF(orientation='L', unit='mm', format='A4')
         pdf.add_page()
         pdf.set_font("Arial", size=10)
         
         # Title
         pdf.set_font("Arial", 'B', 16)
-        pdf.cell(200, 10, txt="Medicine Inventory Report", ln=1, align='C')
-        pdf.ln(10)
+        pdf.cell(0, 10, txt="Medicine Inventory Report", ln=1, align='C')
+        pdf.set_font("Arial", 'I', 10)
+        pdf.cell(0, 10, txt=f"Generated on: {get_timestamp()}", ln=1, align='R')
+        pdf.ln(5)
         
         # Table Header
-        pdf.set_font("Arial", 'B', 10)
-        cols = ["ID", "Name", "Qty", "Price", "Status"] # Select subset for wide table fit
-        col_width = 35
-        for col in cols:
-            pdf.cell(col_width, 10, col, 1, 0, 'C')
+        pdf.set_font("Arial", 'B', 9)
+        # ID, Name, Qty, Price, Category, Manufacturer, Batch, Min Stock, Expiry, Status
+        headers = ["ID", "Name", "Qty", "Price", "Category", "Manufacturer", "Batch #", "Min Stock", "Expiry", "Status"]
+        # Total width for Landscape A4 is ~277mm (297 - 2*10 margin)
+        widths = [10, 40, 15, 20, 30, 40, 30, 20, 30, 30] 
+        
+        for i, col in enumerate(headers):
+            pdf.cell(widths[i], 10, col, 1, 0, 'C')
         pdf.ln()
         
         # Table Body
-        pdf.set_font("Arial", size=10)
+        pdf.set_font("Arial", size=8)
         for med in meds:
-            pdf.cell(col_width, 10, str(med.id), 1)
-            pdf.cell(col_width, 10, str(med.name)[:15], 1) # Truncate long names
-            pdf.cell(col_width, 10, str(med.quantity), 1)
-            pdf.cell(col_width, 10, str(med.price), 1)
-            pdf.cell(col_width, 10, str(med.status), 1)
+            pdf.cell(widths[0], 10, str(med.id), 1, 0, 'C')
+            pdf.cell(widths[1], 10, str(med.name)[:20], 1)
+            pdf.cell(widths[2], 10, str(med.quantity), 1, 0, 'C')
+            pdf.cell(widths[3], 10, f"${med.price:.2f}", 1, 0, 'R')
+            pdf.cell(widths[4], 10, str(med.category)[:15], 1)
+            pdf.cell(widths[5], 10, str(med.manufacturer)[:20], 1)
+            pdf.cell(widths[6], 10, str(med.batchNumber), 1)
+            pdf.cell(widths[7], 10, str(med.minStock), 1, 0, 'C')
+            pdf.cell(widths[8], 10, str(med.expiryDate), 1, 0, 'C')
+            pdf.cell(widths[9], 10, str(med.status), 1, 0, 'C')
             pdf.ln()
             
         stream = io.BytesIO()
-        # FPDF output to string (latin-1) then encode to bytes, or slightly tricky in py3
-        # Direct output() returns string in default mode.
-        # correct way for buffer in fpdf 1.7.2 (standard) is confusing. 
-        # But recent fpdf2 might be different. Let's assume standard usage pattern.
-        # Actually simplest is to write to temp file or return raw string if library allows.
-        # FPDF.output(dest='S') returns string.
-        
         pdf_content = pdf.output(dest='S').encode('latin-1')
         stream.write(pdf_content)
         stream.seek(0)
@@ -319,24 +329,29 @@ async def export_medicines(format: str, current_user: User = Depends(get_current
     elif format.lower() == "docx":
         doc = Document()
         doc.add_heading('Medicine Inventory Report', 0)
+        doc.add_paragraph(f"Generated on: {get_timestamp()}")
         
-        table = doc.add_table(rows=1, cols=6)
+        # ID, Name, Qty, Price, Category, Manufacturer, Batch, Min Stock, Expiry, Status
+        table = doc.add_table(rows=1, cols=10)
+        table.style = 'Table Grid'
         hdr_cells = table.rows[0].cells
-        hdr_cells[0].text = 'ID'
-        hdr_cells[1].text = 'Name'
-        hdr_cells[2].text = 'Qty'
-        hdr_cells[3].text = 'Price'
-        hdr_cells[4].text = 'Category'
-        hdr_cells[5].text = 'Status'
+        headers = ["ID", "Name", "Qty", "Price", "Category", "Manufacturer", "Batch #", "Min Stock", "Expiry", "Status"]
+        for i, h in enumerate(headers):
+            hdr_cells[i].text = h
+            hdr_cells[i].paragraphs[0].runs[0].bold = True
         
         for med in meds:
             row_cells = table.add_row().cells
             row_cells[0].text = str(med.id)
             row_cells[1].text = med.name
             row_cells[2].text = str(med.quantity)
-            row_cells[3].text = str(med.price)
+            row_cells[3].text = f"${med.price:.2f}"
             row_cells[4].text = med.category
-            row_cells[5].text = med.status
+            row_cells[5].text = med.manufacturer
+            row_cells[6].text = med.batchNumber
+            row_cells[7].text = str(med.minStock)
+            row_cells[8].text = med.expiryDate
+            row_cells[9].text = med.status
 
         stream = io.BytesIO()
         doc.save(stream)
@@ -349,14 +364,19 @@ async def export_medicines(format: str, current_user: User = Depends(get_current
     else:
         raise HTTPException(status_code=400, detail="Invalid format. Supported: csv, pdf, docx")
 
-@app.post("/medicines", dependencies=[Depends(require_role(["admin"]))])
+@app.post("/medicines", dependencies=[Depends(require_role(["admin"]))], response_model=Medicine)
 async def add_medicine(med: MedicineCreate, current_user: User = Depends(get_current_user)):
+    if med.quantity < 0:
+        raise HTTPException(status_code=400, detail="Quantity cannot be negative")
+    if med.price < 0:
+        raise HTTPException(status_code=400, detail="Price cannot be negative")
+
     meds = load_medicines()
     next_id = 1
     if meds:
         next_id = max(m.id for m in meds) + 1
     
-    stat = get_stock_status(med.quantity)
+    stat = get_stock_status(med.quantity, med.minStock)
     
     new_med = Medicine(
         id=next_id, 
@@ -375,8 +395,13 @@ async def add_medicine(med: MedicineCreate, current_user: User = Depends(get_cur
     log_activity(f"Added medicine: {med.name}")
     return new_med
 
-@app.put("/medicines/{med_id}", dependencies=[Depends(require_role(["admin"]))])
+@app.put("/medicines/{med_id}", dependencies=[Depends(require_role(["admin"]))], response_model=Medicine)
 async def update_medicine(med_id: int, med_update: MedicineCreate, current_user: User = Depends(get_current_user)):
+    if med_update.quantity < 0:
+        raise HTTPException(status_code=400, detail="Quantity cannot be negative")
+    if med_update.price < 0:
+        raise HTTPException(status_code=400, detail="Price cannot be negative")
+        
     meds = load_medicines()
     for i, m in enumerate(meds):
         if m.id == med_id:
@@ -389,7 +414,7 @@ async def update_medicine(med_id: int, med_update: MedicineCreate, current_user:
             m.batchNumber = med_update.batchNumber
             m.minStock = med_update.minStock
             m.expiryDate = med_update.expiryDate
-            m.status = get_stock_status(m.quantity) # Recalculate status
+            m.status = get_stock_status(m.quantity, m.minStock) # Recalculate status
             
             meds[i] = m
             save_medicines(meds)
