@@ -33,11 +33,13 @@ class Medicine(BaseModel):
 
 class User(BaseModel):
     username: str
+    email: str
     password: str
     role: str
 
 class UserPublic(BaseModel):
     username: str
+    email: str
     role: str
 
 class MedicineCreate(BaseModel):
@@ -168,14 +170,14 @@ def load_users() -> List[User]:
     with open(USER_FILE, "r") as f:
         for line in f:
             parts = line.strip().split(",")
-            if len(parts) == 3:
-                users.append(User(username=parts[0], password=parts[1], role=parts[2]))
+            if len(parts) == 4:
+                users.append(User(username=parts[0], email=parts[1], password=parts[2], role=parts[3]))
     return users
 
 def save_users(users: List[User]):
     with open(USER_FILE, "w") as f:
         for user in users:
-            f.write(f"{user.username},{user.password},{user.role}\n")
+            f.write(f"{user.username},{user.email},{user.password},{user.role}\n")
 
 # Security
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
@@ -204,14 +206,14 @@ def require_role(allowed_roles: List[str]):
 async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     users = load_users()
     for user in users:
-        if user.username == form_data.username and user.password == form_data.password:
+        if (user.username == form_data.username or user.email == form_data.username) and user.password == form_data.password:
             log_activity(f"User {user.username} logged in as {user.role}")
             return {"access_token": user.username, "token_type": "bearer"}
-    raise HTTPException(status_code=400, detail="Incorrect username or password")
+    raise HTTPException(status_code=400, detail="Incorrect username, email or password")
 
 @app.get("/users/me", response_model=UserPublic)
 async def read_users_me(current_user: User = Depends(get_current_user)):
-    return UserPublic(username=current_user.username, role=current_user.role)
+    return UserPublic(username=current_user.username, email=current_user.email, role=current_user.role)
 
 @app.get("/medicines", response_model=List[Medicine])
 async def get_medicines(current_user: User = Depends(get_current_user)):
@@ -422,13 +424,15 @@ async def dispense_medicine(med_id: int, amount: int, current_user: User = Depen
 @app.get("/users", dependencies=[Depends(require_role(["admin"]))], response_model=List[UserPublic])
 async def read_users(current_user: User = Depends(get_current_user)):
     users = load_users()
-    return [UserPublic(username=u.username, role=u.role) for u in users]
+    return [UserPublic(username=u.username, email=u.email, role=u.role) for u in users]
 
 @app.post("/users", dependencies=[Depends(require_role(["admin"]))])
 async def create_user(user: User, current_user: User = Depends(get_current_user)):
     users = load_users()
     if any(u.username == user.username for u in users):
         raise HTTPException(status_code=400, detail="Username already exists")
+    if any(u.email == user.email for u in users):
+        raise HTTPException(status_code=400, detail="Email already exists")
     users.append(user)
     save_users(users)
     log_activity(f"Admin added new user: {user.username} ({user.role})")

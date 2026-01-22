@@ -18,3 +18,5 @@
 [2026-01-21 19:50:24] Deleted medicine ID 3
 [2026-01-21 19:50:24] Admin added new user: todelete (supplier)
 [2026-01-21 19:50:24] Admin deleted user: todelete
+[2026-01-22 12:21:55] User admin logged in as admin
+[2026-01-22 12:21:55] User admin logged in as admin

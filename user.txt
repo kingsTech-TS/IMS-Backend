@@ -1,4 +1,4 @@
-admin,admin123,admin
-pharmacist1,pharm123,pharmacist
-supplier1,supp123,supplier
-new_api_user,123,supplier
+admin,admin@example.com,admin123,admin
+pharmacist1,pharm123@example.com,pharm123,pharmacist
+supplier1,supplier1@example.com,supp123,supplier
+new_api_user,api_user@example.com,123,supplier
