@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from pydantic import BaseModel
@@ -12,6 +13,19 @@ from fpdf import FPDF
 from docx import Document
 
 app = FastAPI()
+
+origins = [
+    "http://localhost:3000",
+    "https://medicine-inventory-management-syste-tau.vercel.app",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Files
 MEDICINE_FILE = "medicines.txt"
