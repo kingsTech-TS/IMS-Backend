@@ -50,11 +50,45 @@ class User(BaseModel):
     email: str
     password: str
     role: str
+    # Personal info
+    firstName: str = ""
+    lastName: str = ""
+    gender: str = ""
+    phoneNumber: str = ""
+    profilePic: str = "" # URL or Base64
+    address: str = "" # Primarily for suppliers
 
 class UserPublic(BaseModel):
     username: str
     email: str
     role: str
+    firstName: str = ""
+    lastName: str = ""
+
+class UserProfile(BaseModel):
+    username: str
+    email: str
+    role: str
+    firstName: str
+    lastName: str
+    gender: str
+    phoneNumber: str
+    profilePic: str
+    address: str
+
+class UserProfileUpdate(BaseModel):
+    firstName: Optional[str] = None
+    lastName: Optional[str] = None
+    gender: Optional[str] = None
+    phoneNumber: Optional[str] = None
+    profilePic: Optional[str] = None
+    address: Optional[str] = None
+
+class UserLoginUpdate(BaseModel):
+    username: Optional[str] = None
+    email: Optional[str] = None
+    newPassword: Optional[str] = None
+    currentPassword: str
 
 class MedicineCreate(BaseModel):
     name: str
@@ -188,17 +222,46 @@ def load_users() -> List[User]:
     users = []
     if not os.path.exists(USER_FILE):
         return users
-    with open(USER_FILE, "r") as f:
-        for line in f:
-            parts = line.strip().split(",")
-            if len(parts) == 4:
-                users.append(User(username=parts[0], email=parts[1], password=parts[2], role=parts[3]))
+    
+    with open(USER_FILE, "r", newline='', encoding='utf-8') as f:
+        # Check if file is empty
+        first_line = f.readline()
+        if not first_line:
+            return []
+        f.seek(0)
+        
+        # Heuristic to check if it's the new format (has header)
+        has_header = first_line.startswith("username,")
+        
+        if has_header:
+            reader = csv.DictReader(f)
+            for row in reader:
+                try:
+                    users.append(User(**row))
+                except Exception:
+                    continue
+        else:
+            # Legacy format support
+            reader = csv.reader(f)
+            for parts in reader:
+                if len(parts) == 4:
+                    users.append(User(
+                        username=parts[0], 
+                        email=parts[1], 
+                        password=parts[2], 
+                        role=parts[3]
+                    ))
     return users
 
 def save_users(users: List[User]):
-    with open(USER_FILE, "w") as f:
+    with open(USER_FILE, "w", newline='', encoding='utf-8') as f:
+        if not users:
+            return
+        fieldnames = list(User.__fields__.keys())
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
         for user in users:
-            f.write(f"{user.username},{user.email},{user.password},{user.role}\n")
+            writer.writerow(user.dict())
 
 # Security
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
@@ -234,7 +297,61 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
 
 @app.get("/users/me", response_model=UserPublic)
 async def read_users_me(current_user: User = Depends(get_current_user)):
-    return UserPublic(username=current_user.username, email=current_user.email, role=current_user.role)
+    return UserPublic(**current_user.dict())
+
+@app.get("/users/me/profile", response_model=UserProfile)
+async def get_my_profile(current_user: User = Depends(get_current_user)):
+    return UserProfile(**current_user.dict())
+
+@app.put("/users/me/profile", response_model=UserProfile)
+async def update_my_profile(profile_update: UserProfileUpdate, current_user: User = Depends(get_current_user)):
+    users = load_users()
+    for i, u in enumerate(users):
+        if u.username == current_user.username:
+            updated_data = u.dict()
+            # Only update provided fields
+            for field, value in profile_update.dict(exclude_unset=True).items():
+                if value is not None:
+                    updated_data[field] = value
+            
+            updated_user = User(**updated_data)
+            users[i] = updated_user
+            save_users(users)
+            log_activity(f"User {u.username} updated profile info")
+            return UserProfile(**updated_user.dict())
+    raise HTTPException(status_code=404, detail="User not found")
+
+@app.put("/users/me/login-details")
+async def update_login_details(login_update: UserLoginUpdate, current_user: User = Depends(get_current_user)):
+    # Verify current password
+    if login_update.currentPassword != current_user.password:
+        raise HTTPException(status_code=400, detail="Incorrect current password")
+    
+    users = load_users()
+    for i, u in enumerate(users):
+        if u.username == current_user.username:
+            # Check username uniqueness if changing
+            if login_update.username and login_update.username != current_user.username:
+                if any(other.username == login_update.username for other in users):
+                    raise HTTPException(status_code=400, detail="Username already taken")
+                u.username = login_update.username
+            
+            # Check email uniqueness if changing
+            if login_update.email and login_update.email != current_user.email:
+                if any(other.email == login_update.email for other in users):
+                    raise HTTPException(status_code=400, detail="Email already registered")
+                u.email = login_update.email
+            
+            # Update password if provided
+            if login_update.newPassword:
+                u.password = login_update.newPassword
+            
+            users[i] = u
+            save_users(users)
+            log_activity(f"User {current_user.username} updated login details")
+            return {"message": "Login details updated successfully. Please re-login if username was changed."}
+            
+    raise HTTPException(status_code=404, detail="User not found")
 
 @app.get("/medicines", response_model=List[Medicine])
 async def get_medicines(current_user: User = Depends(get_current_user)):

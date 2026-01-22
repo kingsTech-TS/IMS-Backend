@@ -1,4 +1,5 @@
-admin,admin@example.com,admin123,admin
-pharmacist1,pharm123@example.com,pharm123,pharmacist
-supplier1,supplier1@example.com,supp123,supplier
-new_api_user,api_user@example.com,123,supplier
+username,email,password,role,firstName,lastName,gender,phoneNumber,profilePic,address
+admin,admin@example.com,admin123,admin,Super,Admin,Other,555-0199,https://example.com/admin.jpg,Admin Tower 1
+pharmacist1,pharm123@example.com,pharm123,pharmacist,,,,,,
+supplier1,supplier1@example.com,supp123,supplier,,,,,,
+new_api_user,api_user@example.com,123,supplier,,,,,,
