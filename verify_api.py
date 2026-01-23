@@ -1,7 +1,7 @@
 import requests
 import sys
 
-BASE_URL = "http://127.0.0.1:8000"
+BASE_URL = "https://ims-backend-10r7.onrender.com"
 
 def test_login(username, password):
     response = requests.post(f"{BASE_URL}/token", data={"username": username, "password": password})

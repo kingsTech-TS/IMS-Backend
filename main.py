@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional
 import csv
 import os
@@ -11,8 +11,30 @@ import io
 import pandas as pd
 from fpdf import FPDF
 from docx import Document
+from motor.motor_asyncio import AsyncIOMotorClient
+import cloudinary
+import cloudinary.uploader
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 app = FastAPI()
+
+# MongoDB Configuration
+MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
+client = AsyncIOMotorClient(MONGODB_URI)
+db = client.get_database("inventory_db")
+medicines_collection = db.get_collection("medicines")
+users_collection = db.get_collection("users")
+
+# Cloudinary Configuration
+cloudinary.config(
+    cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
+    api_key=os.getenv("CLOUDINARY_API_KEY"),
+    api_secret=os.getenv("CLOUDINARY_API_SECRET"),
+    secure=True
+)
 
 origins = [
     "http://localhost:3000",
@@ -121,153 +143,103 @@ def get_stock_status(quantity: int, min_stock: int = 30) -> str:
     else:
         return "In Stock"
 
-def load_medicines() -> List[Medicine]:
+# Helper for MongoDB Migration
+async def migrate_data():
+    # Migrate Medicines
+    if await medicines_collection.count_documents({}) == 0 and os.path.exists(MEDICINE_FILE):
+        print("Migrating medicines from file to MongoDB...")
+        # Use existing sync load_medicines logic for one-time migration
+        with open(MEDICINE_FILE, "r", newline='', encoding='utf-8') as f:
+            first_line = f.readline()
+            f.seek(0)
+            if first_line:
+                has_header = first_line.startswith("id,")
+                meds_to_insert = []
+                if has_header:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        try:
+                            meds_to_insert.append({
+                                "id": int(row["id"]),
+                                "name": row["name"],
+                                "quantity": int(row["quantity"]),
+                                "price": float(row["price"]),
+                                "category": row["category"],
+                                "manufacturer": row["manufacturer"],
+                                "batchNumber": row["batchNumber"],
+                                "minStock": int(row["minStock"]),
+                                "expiryDate": row["expiryDate"],
+                                "status": row["status"]
+                            })
+                        except: continue
+                if meds_to_insert:
+                    await medicines_collection.insert_many(meds_to_insert)
+
+    # Migrate Users
+    if await users_collection.count_documents({}) == 0 and os.path.exists(USER_FILE):
+        print("Migrating users from file to MongoDB...")
+        with open(USER_FILE, "r", newline='', encoding='utf-8') as f:
+            first_line = f.readline()
+            f.seek(0)
+            if first_line:
+                has_header = first_line.startswith("username,")
+                users_to_insert = []
+                if has_header:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        users_to_insert.append(row)
+                else:
+                    reader = csv.reader(f)
+                    for parts in reader:
+                        if len(parts) == 4:
+                            users_to_insert.append({
+                                "username": parts[0],
+                                "email": parts[1],
+                                "password": parts[2],
+                                "role": parts[3],
+                                "firstName": "", "lastName": "", "gender": "",
+                                "phoneNumber": "", "profilePic": "", "address": ""
+                            })
+                if users_to_insert:
+                    await users_collection.insert_many(users_to_insert)
+
+@app.on_event("startup")
+async def startup_db_client():
+    await migrate_data()
+
+# Data Access functions (now async)
+async def load_medicines() -> List[Medicine]:
     meds = []
-    if not os.path.exists(MEDICINE_FILE):
-        return meds
-    
-    with open(MEDICINE_FILE, "r", newline='', encoding='utf-8') as f:
-        # Check if file has header, if not, we might need legacy handling or assume header exists after migration
-        # For simplicity in this task, we'll assume or ensure header matches.
-        # But to be safe with existing fragile data, let's use DictReader if header exists, 
-        # or fallback to direct read if it looks like old format.
-        # Given we are "Fixing errors", let's standardise the file format.
-        # We will try to read as CSV.
-        
-        # Read first line to check format
-        pos = f.tell()
-        first_line = f.readline()
-        f.seek(pos)
-        
-        if not first_line:
-            return []
-            
-        fieldnames = ["id", "name", "quantity", "price", "category", "manufacturer", "batchNumber", "minStock", "expiryDate", "status"]
-        
-        # Simple heuristic: if first line starts with "id", it's a header
-        has_header = first_line.startswith("id,")
-        
-        if has_header:
-            reader = csv.DictReader(f)
-            for row in reader:
-                try:
-                    qty = int(row["quantity"])
-                    min_stk = int(row.get("minStock", 30))
-                    stat = get_stock_status(qty, min_stk) # Enforce dynamic status logic
-                    meds.append(Medicine(
-                        id=int(row["id"]),
-                        name=row["name"],
-                        quantity=qty,
-                        price=float(row["price"]),
-                        category=row["category"],
-                        manufacturer=row["manufacturer"],
-                        batchNumber=row["batchNumber"],
-                        minStock=int(row["minStock"]),
-                        expiryDate=row["expiryDate"],
-                        status=stat
-                    ))
-                except (ValueError, KeyError):
-                    continue # Skip malformed lines
-        else:
-            # Legacy format support (no header)
-            reader = csv.reader(f)
-            for parts in reader:
-                if len(parts) >= 10:
-                    try:
-                        qty = int(parts[2])
-                        min_stk = int(parts[7]) if len(parts) >= 8 else 30
-                        stat = get_stock_status(qty, min_stk)
-                        meds.append(Medicine(
-                            id=int(parts[0]),
-                            name=parts[1],
-                            quantity=qty,
-                            price=float(parts[3]),
-                            category=parts[4],
-                            manufacturer=parts[5],
-                            batchNumber=parts[6],
-                            minStock=int(parts[7]),
-                            expiryDate=parts[8],
-                            status=stat
-                        ))
-                    except ValueError:
-                        continue
-                elif len(parts) >= 4:
-                    # Very old format fallback
-                    try:
-                        qty = int(parts[2])
-                        stat = get_stock_status(qty, 30)
-                        meds.append(Medicine(
-                            id=int(parts[0]),
-                            name=parts[1],
-                            quantity=qty,
-                            price=float(parts[3]),
-                            category="N/A", manufacturer="N/A", batchNumber="N/A",
-                            minStock=0, expiryDate="N/A", status=stat
-                        ))
-                    except ValueError:
-                        continue
+    cursor = medicines_collection.find({})
+    async for doc in cursor:
+        doc.pop('_id', None)
+        meds.append(Medicine(**doc))
     return meds
 
-def save_medicines(meds: List[Medicine]):
-    with open(MEDICINE_FILE, "w", newline='', encoding='utf-8') as f:
-        fieldnames = ["id", "name", "quantity", "price", "category", "manufacturer", "batchNumber", "minStock", "expiryDate", "status"]
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        for med in meds:
-            # Update status before saving
-            med.status = get_stock_status(med.quantity, med.minStock)
-            writer.writerow(med.dict())
+async def save_medicines(meds: List[Medicine]):
+    # In MongoDB, we usually update specific documents
+    # But for compatibility with existing "overwrite all" logic:
+    for med in meds:
+        med.status = get_stock_status(med.quantity, med.minStock)
+        await medicines_collection.replace_one({"id": med.id}, med.dict(), upsert=True)
 
-def load_users() -> List[User]:
+async def load_users() -> List[User]:
     users = []
-    if not os.path.exists(USER_FILE):
-        return users
-    
-    with open(USER_FILE, "r", newline='', encoding='utf-8') as f:
-        # Check if file is empty
-        first_line = f.readline()
-        if not first_line:
-            return []
-        f.seek(0)
-        
-        # Heuristic to check if it's the new format (has header)
-        has_header = first_line.startswith("username,")
-        
-        if has_header:
-            reader = csv.DictReader(f)
-            for row in reader:
-                try:
-                    users.append(User(**row))
-                except Exception:
-                    continue
-        else:
-            # Legacy format support
-            reader = csv.reader(f)
-            for parts in reader:
-                if len(parts) == 4:
-                    users.append(User(
-                        username=parts[0], 
-                        email=parts[1], 
-                        password=parts[2], 
-                        role=parts[3]
-                    ))
+    cursor = users_collection.find({})
+    async for doc in cursor:
+        doc.pop('_id', None)
+        users.append(User(**doc))
     return users
 
-def save_users(users: List[User]):
-    with open(USER_FILE, "w", newline='', encoding='utf-8') as f:
-        if not users:
-            return
-        fieldnames = list(User.__fields__.keys())
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        for user in users:
-            writer.writerow(user.dict())
+async def save_users(users: List[User]):
+    for user in users:
+        await users_collection.replace_one({"username": user.username}, user.dict(), upsert=True)
 
 # Security
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-def get_current_user(token: str = Depends(oauth2_scheme)):
-    users = load_users()
+async def get_current_user(token: str = Depends(oauth2_scheme)):
+    users = await load_users()
     for user in users:
         if user.username == token:
             return user
@@ -288,7 +260,7 @@ def require_role(allowed_roles: List[str]):
 
 @app.post("/token")
 async def login(form_data: OAuth2PasswordRequestForm = Depends()):
-    users = load_users()
+    users = await load_users()
     for user in users:
         if (user.username == form_data.username or user.email == form_data.username) and user.password == form_data.password:
             log_activity(f"User {user.username} logged in as {user.role}")
@@ -305,7 +277,7 @@ async def get_my_profile(current_user: User = Depends(get_current_user)):
 
 @app.put("/users/me/profile", response_model=UserProfile)
 async def update_my_profile(profile_update: UserProfileUpdate, current_user: User = Depends(get_current_user)):
-    users = load_users()
+    users = await load_users()
     for i, u in enumerate(users):
         if u.username == current_user.username:
             updated_data = u.dict()
@@ -316,7 +288,7 @@ async def update_my_profile(profile_update: UserProfileUpdate, current_user: Use
             
             updated_user = User(**updated_data)
             users[i] = updated_user
-            save_users(users)
+            await save_users(users)
             log_activity(f"User {u.username} updated profile info")
             return UserProfile(**updated_user.dict())
     raise HTTPException(status_code=404, detail="User not found")
@@ -327,7 +299,7 @@ async def update_login_details(login_update: UserLoginUpdate, current_user: User
     if login_update.currentPassword != current_user.password:
         raise HTTPException(status_code=400, detail="Incorrect current password")
     
-    users = load_users()
+    users = await load_users()
     for i, u in enumerate(users):
         if u.username == current_user.username:
             # Check username uniqueness if changing
@@ -347,7 +319,7 @@ async def update_login_details(login_update: UserLoginUpdate, current_user: User
                 u.password = login_update.newPassword
             
             users[i] = u
-            save_users(users)
+            await save_users(users)
             log_activity(f"User {current_user.username} updated login details")
             return {"message": "Login details updated successfully. Please re-login if username was changed."}
             
@@ -355,11 +327,11 @@ async def update_login_details(login_update: UserLoginUpdate, current_user: User
 
 @app.get("/medicines", response_model=List[Medicine])
 async def get_medicines(current_user: User = Depends(get_current_user)):
-    return load_medicines()
+    return await load_medicines()
 
 @app.get("/medicines/search")
 async def search_medicine(name: str, current_user: User = Depends(get_current_user)):
-    meds = load_medicines()
+    meds = await load_medicines()
     # Case insensitive substring search
     return [m for m in meds if name.lower() in m.name.lower()]
 
@@ -371,7 +343,7 @@ async def get_medicines_status(current_user: User = Depends(get_current_user)):
     < 30 -> Low Stock
     < 15 -> Critical
     """
-    meds = load_medicines()
+    meds = await load_medicines()
     status_report = {
         "Critical": [m for m in meds if m.quantity < 15],
         "Low Stock": [m for m in meds if 15 <= m.quantity < 30],
@@ -381,7 +353,7 @@ async def get_medicines_status(current_user: User = Depends(get_current_user)):
 
 @app.get("/medicines/export")
 async def export_medicines(format: str, current_user: User = Depends(get_current_user)):
-    meds = load_medicines()
+    meds = await load_medicines()
     if not meds:
         raise HTTPException(status_code=404, detail="No medicines to export")
     
@@ -488,7 +460,7 @@ async def add_medicine(med: MedicineCreate, current_user: User = Depends(get_cur
     if med.price < 0:
         raise HTTPException(status_code=400, detail="Price cannot be negative")
 
-    meds = load_medicines()
+    meds = await load_medicines()
     next_id = 1
     if meds:
         next_id = max(m.id for m in meds) + 1
@@ -508,7 +480,7 @@ async def add_medicine(med: MedicineCreate, current_user: User = Depends(get_cur
         status=stat
     )
     meds.append(new_med)
-    save_medicines(meds)
+    await save_medicines(meds)
     log_activity(f"Added medicine: {med.name}")
     return new_med
 
@@ -519,7 +491,7 @@ async def update_medicine(med_id: int, med_update: MedicineCreate, current_user:
     if med_update.price < 0:
         raise HTTPException(status_code=400, detail="Price cannot be negative")
         
-    meds = load_medicines()
+    meds = await load_medicines()
     for i, m in enumerate(meds):
         if m.id == med_id:
             # Update fields
@@ -534,75 +506,83 @@ async def update_medicine(med_id: int, med_update: MedicineCreate, current_user:
             m.status = get_stock_status(m.quantity, m.minStock) # Recalculate status
             
             meds[i] = m
-            save_medicines(meds)
+            await save_medicines(meds)
             log_activity(f"Updated medicine ID {med_id}")
             return m
     raise HTTPException(status_code=404, detail="Medicine not found")
 
 @app.delete("/medicines/{med_id}", dependencies=[Depends(require_role(["admin"]))])
 async def delete_medicine(med_id: int, current_user: User = Depends(get_current_user)):
-    meds = load_medicines()
+    meds = await load_medicines()
     initial_len = len(meds)
     meds = [m for m in meds if m.id != med_id]
     if len(meds) == initial_len:
          raise HTTPException(status_code=404, detail="Medicine not found")
     
-    save_medicines(meds)
+    await save_medicines(meds)
     log_activity(f"Deleted medicine ID {med_id}")
     return {"message": "Medicine deleted successfully"}
 
 @app.put("/medicines/{med_id}/restock", dependencies=[Depends(require_role(["admin", "supplier"]))])
 async def restock_medicine(med_id: int, amount: int, current_user: User = Depends(get_current_user)):
-    meds = load_medicines()
+    meds = await load_medicines()
     for m in meds:
         if m.id == med_id:
             m.quantity += amount
-            m.status = get_stock_status(m.quantity)
-            save_medicines(meds)
+            m.status = get_stock_status(m.quantity, m.minStock)
+            await save_medicines(meds)
             log_activity(f"Restocked medicine ID {med_id} by {amount}")
             return m
     raise HTTPException(status_code=404, detail="Medicine not found")
 
 @app.put("/medicines/{med_id}/dispense", dependencies=[Depends(require_role(["admin", "pharmacist"]))])
 async def dispense_medicine(med_id: int, amount: int, current_user: User = Depends(get_current_user)):
-    meds = load_medicines()
+    meds = await load_medicines()
     for m in meds:
         if m.id == med_id:
             if m.quantity < amount:
                 raise HTTPException(status_code=400, detail="Insufficient stock")
             m.quantity -= amount
-            m.status = get_stock_status(m.quantity)
-            save_medicines(meds)
+            m.status = get_stock_status(m.quantity, m.minStock)
+            await save_medicines(meds)
             log_activity(f"Dispensed medicine ID {med_id} amount {amount}")
             return m
     raise HTTPException(status_code=404, detail="Medicine not found")
 
-@app.get("/users", dependencies=[Depends(require_role(["admin"]))], response_model=List[UserPublic])
+@app.get("/users", dependencies=[Depends(require_role(["admin"]))], response_model=List[UserProfile])
 async def read_users(current_user: User = Depends(get_current_user)):
-    users = load_users()
-    return [UserPublic(username=u.username, email=u.email, role=u.role) for u in users]
+    users = await load_users()
+    return [UserProfile(**u.dict()) for u in users]
+
+@app.get("/users/{username}", dependencies=[Depends(require_role(["admin"]))], response_model=UserProfile)
+async def read_user_detail(username: str, current_user: User = Depends(get_current_user)):
+    users = await load_users()
+    for u in users:
+        if u.username == username:
+            return UserProfile(**u.dict())
+    raise HTTPException(status_code=404, detail="User not found")
 
 @app.post("/users", dependencies=[Depends(require_role(["admin"]))])
 async def create_user(user: User, current_user: User = Depends(get_current_user)):
-    users = load_users()
+    users = await load_users()
     if any(u.username == user.username for u in users):
         raise HTTPException(status_code=400, detail="Username already exists")
     if any(u.email == user.email for u in users):
         raise HTTPException(status_code=400, detail="Email already exists")
     users.append(user)
-    save_users(users)
+    await save_users(users)
     log_activity(f"Admin added new user: {user.username} ({user.role})")
     return {"message": "User added successfully"}
 
 @app.put("/users/{username}", dependencies=[Depends(require_role(["admin"]))])
-async def update_user(username: str, user_update: User, current_user: User = Depends(get_current_user)):
-    users = load_users()
+async def update_any_user(username: str, user_update: User, current_user: User = Depends(get_current_user)):
+    users = await load_users()
     found = False
     for i, u in enumerate(users):
         if u.username == username:
             if user_update.username != username:
                  if any(other.username == user_update.username for other in users):
-                      raise HTTPException(status_code=400, detail="New username already exists")
+                      raise HTTPException(status_code=400, detail="New username already taken")
             
             users[i] = user_update
             found = True
@@ -611,13 +591,13 @@ async def update_user(username: str, user_update: User, current_user: User = Dep
     if not found:
         raise HTTPException(status_code=404, detail="User not found")
         
-    save_users(users)
+    await save_users(users)
     log_activity(f"Admin updated user: {username}")
     return {"message": "User updated successfully"}
 
 @app.delete("/users/{username}", dependencies=[Depends(require_role(["admin"]))])
 async def delete_user(username: str, current_user: User = Depends(get_current_user)):
-    users = load_users()
+    users = await load_users()
     initial_len = len(users)
     users = [u for u in users if u.username != username]
     
@@ -627,6 +607,29 @@ async def delete_user(username: str, current_user: User = Depends(get_current_us
     if username == current_user.username: 
          raise HTTPException(status_code=400, detail="Cannot delete your own account")
 
-    save_users(users)
+    await save_users(users)
     log_activity(f"Admin deleted user: {username}")
     return {"message": "User deleted successfully"}
+
+from fastapi import File, UploadFile
+
+@app.post("/users/me/profile-pic")
+async def upload_profile_pic(file: UploadFile = File(...), current_user: User = Depends(get_current_user)):
+    try:
+        # Upload to Cloudinary
+        result = cloudinary.uploader.upload(file.file, folder="ims_profiles")
+        url = result.get("secure_url")
+        
+        # Update user profile
+        users = await load_users()
+        for i, u in enumerate(users):
+            if u.username == current_user.username:
+                u.profilePic = url
+                users[i] = u
+                await save_users(users)
+                log_activity(f"User {u.username} uploaded new profile picture")
+                return {"profilePic": url}
+        
+        raise HTTPException(status_code=404, detail="User not found")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
