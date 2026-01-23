@@ -632,10 +632,10 @@ async def delete_user(username: str, current_user: User = Depends(get_current_us
 from fastapi import File, UploadFile
 
 @app.post("/users/me/profile-pic")
-async def upload_profile_pic(file: UploadFile = File(...), current_user: User = Depends(get_current_user)):
+async def upload_profile_pic(profilePic: UploadFile = File(...), current_user: User = Depends(get_current_user)):
     try:
         # Upload to Cloudinary
-        result = cloudinary.uploader.upload(file.file, folder="ims_profiles")
+        result = cloudinary.uploader.upload(profilePic.file, folder="ims_profiles")
         url = result.get("secure_url")
         
         # Update user profile
