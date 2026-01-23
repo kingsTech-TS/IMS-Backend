@@ -42,6 +42,7 @@ client = AsyncIOMotorClient(MONGODB_URI)
 db = client.get_database("inventory_db")
 medicines_collection = db.get_collection("medicines")
 users_collection = db.get_collection("users")
+activities_collection = db.get_collection("activities")
 
 # Cloudinary Configuration
 if not all([CLOUDINARY_NAME, CLOUDINARY_KEY, CLOUDINARY_SECRET]):
@@ -140,6 +141,23 @@ class MedicineCreate(BaseModel):
     price: float
     minStock: int
 
+class Activity(BaseModel):
+    timestamp: str
+    user: str
+    action: str
+    details: str
+
+class Alert(BaseModel):
+    medicineId: int
+    medicineName: str
+    currentStock: int
+    minStock: int
+    status: str
+    category: str
+    manufacturer: str
+    batchNumber: str
+    expiryDate: str
+
 # Helpers
 def get_timestamp():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -147,6 +165,16 @@ def get_timestamp():
 def log_activity(activity: str):
     with open(LOG_FILE, "a") as f:
         f.write(f"[{get_timestamp()}] {activity}\n")
+
+async def log_activity_to_db(user: str, action: str, details: str):
+    """Log activity to MongoDB for tracking"""
+    activity = Activity(
+        timestamp=get_timestamp(),
+        user=user,
+        action=action,
+        details=details
+    )
+    await activities_collection.insert_one(activity.dict())
 
 def get_stock_status(quantity: int, min_stock: int = 30) -> str:
     # Use min_stock as threshold for Low Stock, half of it for Critical
@@ -282,6 +310,7 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     for user in users:
         if (user.username == form_data.username or user.email == form_data.username) and user.password == form_data.password:
             log_activity(f"User {user.username} logged in as {user.role}")
+            await log_activity_to_db(user.username, "LOGIN", f"User logged in as {user.role}")
             return {"access_token": user.username, "token_type": "bearer"}
     raise HTTPException(status_code=400, detail="Incorrect username, email or password")
 
@@ -308,6 +337,7 @@ async def update_my_profile(profile_update: UserProfileUpdate, current_user: Use
             users[i] = updated_user
             await save_users(users)
             log_activity(f"User {u.username} updated profile info")
+            await log_activity_to_db(current_user.username, "UPDATE_PROFILE", f"Updated personal information")
             return UserProfile(**updated_user.dict())
     raise HTTPException(status_code=404, detail="User not found")
 
@@ -339,6 +369,7 @@ async def update_login_details(login_update: UserLoginUpdate, current_user: User
             users[i] = u
             await save_users(users)
             log_activity(f"User {current_user.username} updated login details")
+            await log_activity_to_db(current_user.username, "UPDATE_LOGIN", f"Updated login credentials")
             return {"message": "Login details updated successfully. Please re-login if username was changed."}
             
     raise HTTPException(status_code=404, detail="User not found")
@@ -564,6 +595,7 @@ async def dispense_medicine(med_id: int, amount: int, current_user: User = Depen
             m.status = get_stock_status(m.quantity, m.minStock)
             await save_medicines(meds)
             log_activity(f"Dispensed medicine ID {med_id} amount {amount}")
+            await log_activity_to_db(current_user.username, "DISPENSE_MEDICINE", f"Dispensed {amount} units of {m.name} (ID: {med_id})")
             return m
     raise HTTPException(status_code=404, detail="Medicine not found")
 
@@ -587,46 +619,56 @@ async def create_user(user: User, current_user: User = Depends(get_current_user)
         raise HTTPException(status_code=400, detail="Username already exists")
     if any(u.email == user.email for u in users):
         raise HTTPException(status_code=400, detail="Email already exists")
+    
+    # Auto-create login credentials: email as username, healme12 as default password
+    user.username = user.email
+    user.password = "healme12"
+    
     users.append(user)
     await save_users(users)
     log_activity(f"Admin added new user: {user.username} ({user.role})")
-    return {"message": "User added successfully"}
+    await log_activity_to_db(current_user.username, "CREATE_USER", f"Created user {user.username} with role {user.role}")
+    return {"message": "User added successfully", "username": user.email, "defaultPassword": "healme12"}
 
 @app.put("/users/{username}", dependencies=[Depends(require_role(["admin"]))])
 async def update_any_user(username: str, user_update: User, current_user: User = Depends(get_current_user)):
+    # Update user in MongoDB directly to avoid duplicates
     users = await load_users()
-    found = False
-    for i, u in enumerate(users):
+    user_found = None
+    
+    for u in users:
         if u.username == username:
-            if user_update.username != username:
-                 if any(other.username == user_update.username for other in users):
-                      raise HTTPException(status_code=400, detail="New username already taken")
-            
-            users[i] = user_update
-            found = True
+            user_found = u
             break
     
-    if not found:
+    if not user_found:
         raise HTTPException(status_code=404, detail="User not found")
-        
-    await save_users(users)
+    
+    # Check username uniqueness if changing
+    if user_update.username != username:
+        if any(other.username == user_update.username for other in users):
+            raise HTTPException(status_code=400, detail="New username already taken")
+    
+    # Update in MongoDB using replace_one with username filter
+    await users_collection.replace_one({"username": username}, user_update.dict())
     log_activity(f"Admin updated user: {username}")
+    await log_activity_to_db(current_user.username, "UPDATE_USER", f"Updated user {username}")
     return {"message": "User updated successfully"}
 
 @app.delete("/users/{username}", dependencies=[Depends(require_role(["admin"]))])
 async def delete_user(username: str, current_user: User = Depends(get_current_user)):
-    users = await load_users()
-    initial_len = len(users)
-    users = [u for u in users if u.username != username]
+    # Check self-deletion BEFORE filtering
+    if username == current_user.username:
+        raise HTTPException(status_code=400, detail="Cannot delete your own account")
     
-    if len(users) == initial_len:
+    # Delete from MongoDB directly
+    result = await users_collection.delete_one({"username": username})
+    
+    if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="User not found")
-        
-    if username == current_user.username: 
-         raise HTTPException(status_code=400, detail="Cannot delete your own account")
-
-    await save_users(users)
+    
     log_activity(f"Admin deleted user: {username}")
+    await log_activity_to_db(current_user.username, "DELETE_USER", f"Deleted user {username}")
     return {"message": "User deleted successfully"}
 
 from fastapi import File, UploadFile
@@ -651,3 +693,58 @@ async def upload_profile_pic(profilePic: UploadFile = File(...), current_user: U
         raise HTTPException(status_code=404, detail="User not found")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+
+# Activity Logging Endpoint
+@app.get("/activities", dependencies=[Depends(require_role(["admin"]))], response_model=List[Activity])
+async def get_activities(current_user: User = Depends(get_current_user), limit: int = 100):
+    """Get recent activities (admin only)"""
+    activities = []
+    cursor = activities_collection.find({}).sort("timestamp", -1).limit(limit)
+    async for doc in cursor:
+        doc.pop('_id', None)
+        activities.append(Activity(**doc))
+    return activities
+
+# Alert Endpoints
+@app.get("/alerts", dependencies=[Depends(require_role(["admin", "pharmacist"]))], response_model=List[Alert])
+async def get_alerts(current_user: User = Depends(get_current_user)):
+    """Get all medicines with Low Stock or Critical status"""
+    meds = await load_medicines()
+    alerts = []
+    for med in meds:
+        if med.status in ["Low Stock", "Critical"]:
+            alerts.append(Alert(
+                medicineId=med.id,
+                medicineName=med.name,
+                currentStock=med.quantity,
+                minStock=med.minStock,
+                status=med.status,
+                category=med.category,
+                manufacturer=med.manufacturer,
+                batchNumber=med.batchNumber,
+                expiryDate=med.expiryDate
+            ))
+    return alerts
+
+@app.get("/supplier/alerts", dependencies=[Depends(require_role(["supplier"]))], response_model=List[Alert])
+async def get_supplier_alerts(current_user: User = Depends(get_current_user)):
+    """Get low stock alerts for medicines relevant to this supplier"""
+    meds = await load_medicines()
+    alerts = []
+    
+    # For now, show all low stock items to suppliers
+    # In future, you could filter by manufacturer or add supplier assignment to medicines
+    for med in meds:
+        if med.status in ["Low Stock", "Critical"]:
+            alerts.append(Alert(
+                medicineId=med.id,
+                medicineName=med.name,
+                currentStock=med.quantity,
+                minStock=med.minStock,
+                status=med.status,
+                category=med.category,
+                manufacturer=med.manufacturer,
+                batchNumber=med.batchNumber,
+                expiryDate=med.expiryDate
+            ))
+    return alerts
