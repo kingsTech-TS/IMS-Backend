@@ -21,20 +21,38 @@ load_dotenv()
 
 app = FastAPI()
 
+# Environment Validation
+MONGODB_URI = os.getenv("MONGODB_URI")
+CLOUDINARY_NAME = os.getenv("CLOUDINARY_CLOUD_NAME")
+CLOUDINARY_KEY = os.getenv("CLOUDINARY_API_KEY")
+CLOUDINARY_SECRET = os.getenv("CLOUDINARY_API_SECRET")
+
+# Check if we are running in production (Render usually sets RENDER=true or similar)
+IS_PRODUCTION = os.getenv("RENDER") == "true" or os.getenv("PORT") is not None
+
+if not MONGODB_URI:
+    if IS_PRODUCTION:
+        raise RuntimeError("CRITICAL ERROR: MONGODB_URI is not set in environment variables.")
+    else:
+        print("WARNING: MONGODB_URI not found, defaulting to localhost.")
+        MONGODB_URI = "mongodb://localhost:27017"
+
 # MongoDB Configuration
-MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
 client = AsyncIOMotorClient(MONGODB_URI)
 db = client.get_database("inventory_db")
 medicines_collection = db.get_collection("medicines")
 users_collection = db.get_collection("users")
 
 # Cloudinary Configuration
-cloudinary.config(
-    cloud_name=os.getenv("CLOUDINARY_CLOUD_NAME"),
-    api_key=os.getenv("CLOUDINARY_API_KEY"),
-    api_secret=os.getenv("CLOUDINARY_API_SECRET"),
-    secure=True
-)
+if not all([CLOUDINARY_NAME, CLOUDINARY_KEY, CLOUDINARY_SECRET]):
+    print("WARNING: Cloudinary credentials missing. Profile picture uploads will fail.")
+else:
+    cloudinary.config(
+        cloud_name=CLOUDINARY_NAME,
+        api_key=CLOUDINARY_KEY,
+        api_secret=CLOUDINARY_SECRET,
+        secure=True
+    )
 
 origins = [
     "http://localhost:3000",
