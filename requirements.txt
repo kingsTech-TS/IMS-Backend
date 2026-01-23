@@ -5,3 +5,8 @@ python-multipart
 pandas
 fpdf
 python-docx
+motor
+cloudinary
+python-dotenv
+pymongo
+dnspython
