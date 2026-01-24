@@ -85,6 +85,7 @@ class Medicine(BaseModel):
     minStock: int
     expiryDate: str
     status: str
+    supplier: Optional[str] = None # Username or Name of supplier
 
 class User(BaseModel):
     username: str
@@ -98,6 +99,9 @@ class User(BaseModel):
     phoneNumber: str = ""
     profilePic: str = "" # URL or Base64
     address: str = "" # Primarily for suppliers
+
+class UserCreate(User):
+    pass
 
 class UserPublic(BaseModel):
     username: str
@@ -140,6 +144,7 @@ class MedicineCreate(BaseModel):
     expiryDate: str
     price: float
     minStock: int
+    supplier: Optional[str] = None
 
 class Activity(BaseModel):
     timestamp: str
@@ -157,6 +162,10 @@ class Alert(BaseModel):
     manufacturer: str
     batchNumber: str
     expiryDate: str
+    price: float
+    timestamp: str
+    daysRemaining: Optional[int] = None
+
 
 # Helpers
 def get_timestamp():
@@ -215,7 +224,9 @@ async def migrate_data():
                                 "batchNumber": row["batchNumber"],
                                 "minStock": int(row["minStock"]),
                                 "expiryDate": row["expiryDate"],
-                                "status": row["status"]
+                                "expiryDate": row["expiryDate"],
+                                "status": row["status"],
+                                "supplier": row.get("supplier", None)
                             })
                         except: continue
                 if meds_to_insert:
@@ -526,11 +537,12 @@ async def add_medicine(med: MedicineCreate, current_user: User = Depends(get_cur
         batchNumber=med.batchNumber,
         minStock=med.minStock,
         expiryDate=med.expiryDate,
-        status=stat
+        status=stat,
+        supplier=med.supplier
     )
     meds.append(new_med)
     await save_medicines(meds)
-    log_activity(f"Added medicine: {med.name}")
+    log_activity(f"Added medicine: {med.name} (Supplier: {med.supplier})")
     return new_med
 
 @app.put("/medicines/{med_id}", dependencies=[Depends(require_role(["admin"]))], response_model=Medicine)
@@ -552,6 +564,7 @@ async def update_medicine(med_id: int, med_update: MedicineCreate, current_user:
             m.batchNumber = med_update.batchNumber
             m.minStock = med_update.minStock
             m.expiryDate = med_update.expiryDate
+            m.supplier = med_update.supplier
             m.status = get_stock_status(m.quantity, m.minStock) # Recalculate status
             
             meds[i] = m
@@ -603,6 +616,11 @@ async def dispense_medicine(med_id: int, amount: int, current_user: User = Depen
 async def read_users(current_user: User = Depends(get_current_user)):
     users = await load_users()
     return [UserProfile(**u.dict()) for u in users]
+
+@app.get("/suppliers", dependencies=[Depends(require_role(["admin", "pharmacist"]))], response_model=List[UserPublic])
+async def get_suppliers(current_user: User = Depends(get_current_user)):
+    users = await load_users()
+    return [UserPublic(**u.dict()) for u in users if u.role == "supplier"]
 
 @app.get("/users/{username}", dependencies=[Depends(require_role(["admin"]))], response_model=UserProfile)
 async def read_user_detail(username: str, current_user: User = Depends(get_current_user)):
@@ -706,24 +724,60 @@ async def get_activities(current_user: User = Depends(get_current_user), limit: 
     return activities
 
 # Alert Endpoints
+
 @app.get("/alerts", dependencies=[Depends(require_role(["admin", "pharmacist"]))], response_model=List[Alert])
-async def get_alerts(current_user: User = Depends(get_current_user)):
-    """Get all medicines with Low Stock or Critical status"""
+async def get_alerts_enhanced(current_user: User = Depends(get_current_user)):
+    """
+    Get medicines with:
+    1. Low Stock or Critical status
+    2. Expiry date within 3 months (90 days)
+    """
     meds = await load_medicines()
     alerts = []
+    now = datetime.now()
+    
     for med in meds:
+        should_alert = False
+        status_reason = med.status
+        days_remaining = None
+        
+        # Check Stock
         if med.status in ["Low Stock", "Critical"]:
+            should_alert = True
+            
+        # Check Expiry
+        try:
+            # Assuming YYYY-MM-DD
+            expiry = datetime.strptime(med.expiryDate, "%Y-%m-%d")
+            delta = expiry - now
+            days_remaining = delta.days
+            
+            if days_remaining <= 90:
+                should_alert = True
+                if med.status == "In Stock": # Override status for display purpose if it's purely an expiry alert? 
+                    # Actually, the user wants "in the alert it should show... days remaining"
+                    # We can keep original status but maybe add a note or just rely on the client to show daysRemaining
+                    pass
+        except ValueError:
+            # Invalid date format, skip expiry check or log warning
+            pass
+
+        if should_alert:
             alerts.append(Alert(
                 medicineId=med.id,
                 medicineName=med.name,
                 currentStock=med.quantity,
                 minStock=med.minStock,
-                status=med.status,
+                status=med.status, # Keep original stock status
                 category=med.category,
                 manufacturer=med.manufacturer,
                 batchNumber=med.batchNumber,
-                expiryDate=med.expiryDate
+                expiryDate=med.expiryDate,
+                price=med.price,
+                timestamp=get_timestamp(),
+                daysRemaining=days_remaining
             ))
+            
     return alerts
 
 @app.get("/supplier/alerts", dependencies=[Depends(require_role(["supplier"]))], response_model=List[Alert])
@@ -745,6 +799,9 @@ async def get_supplier_alerts(current_user: User = Depends(get_current_user)):
                 category=med.category,
                 manufacturer=med.manufacturer,
                 batchNumber=med.batchNumber,
-                expiryDate=med.expiryDate
+                expiryDate=med.expiryDate,
+                price=med.price,
+                timestamp=get_timestamp(),
+                daysRemaining=None # Explicitly None or calc if needed
             ))
     return alerts
