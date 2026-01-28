@@ -185,7 +185,18 @@ async def log_activity_to_db(user: str, action: str, details: str):
     )
     await activities_collection.insert_one(activity.dict())
 
-def get_stock_status(quantity: int, min_stock: int = 30) -> str:
+def get_stock_status(quantity: int, min_stock: int = 30, expiry_date: str = "N/A") -> str:
+    # Check Expiry first as it's a critical safety concern
+    if expiry_date and expiry_date != "N/A":
+        try:
+            now = datetime.now()
+            expiry = datetime.strptime(expiry_date, "%Y-%m-%d")
+            days_remaining = (expiry - now).days
+            if days_remaining <= 90:
+                return "Expiring Soon"
+        except ValueError:
+            pass
+
     # Use min_stock as threshold for Low Stock, half of it for Critical
     # If min_stock is 0, default to current hardcoded values
     low_threshold = min_stock if min_stock > 0 else 30
@@ -277,7 +288,7 @@ async def save_medicines(meds: List[Medicine]):
     # In MongoDB, we usually update specific documents
     # But for compatibility with existing "overwrite all" logic:
     for med in meds:
-        med.status = get_stock_status(med.quantity, med.minStock)
+        med.status = get_stock_status(med.quantity, med.minStock, med.expiryDate)
         await medicines_collection.replace_one({"id": med.id}, med.dict(), upsert=True)
 
 async def load_users() -> List[User]:
@@ -405,9 +416,10 @@ async def get_medicines_status(current_user: User = Depends(get_current_user)):
     """
     meds = await load_medicines()
     status_report = {
-        "Critical": [m for m in meds if m.quantity < 15],
-        "Low Stock": [m for m in meds if 15 <= m.quantity < 30],
-        "In Stock": [m for m in meds if m.quantity >= 30]
+        "Critical": [m for m in meds if m.status == "Critical"],
+        "Low Stock": [m for m in meds if m.status == "Low Stock"],
+        "Expiring Soon": [m for m in meds if m.status == "Expiring Soon"],
+        "In Stock": [m for m in meds if m.status == "In Stock"]
     }
     return status_report
 
@@ -525,7 +537,7 @@ async def add_medicine(med: MedicineCreate, current_user: User = Depends(get_cur
     if meds:
         next_id = max(m.id for m in meds) + 1
     
-    stat = get_stock_status(med.quantity, med.minStock)
+    stat = get_stock_status(med.quantity, med.minStock, med.expiryDate)
     
     new_med = Medicine(
         id=next_id, 
@@ -565,7 +577,7 @@ async def update_medicine(med_id: int, med_update: MedicineCreate, current_user:
             m.minStock = med_update.minStock
             m.expiryDate = med_update.expiryDate
             m.supplier = med_update.supplier
-            m.status = get_stock_status(m.quantity, m.minStock) # Recalculate status
+            m.status = get_stock_status(m.quantity, m.minStock, m.expiryDate) # Recalculate status
             
             meds[i] = m
             await save_medicines(meds)
@@ -591,7 +603,7 @@ async def restock_medicine(med_id: int, amount: int, current_user: User = Depend
     for m in meds:
         if m.id == med_id:
             m.quantity += amount
-            m.status = get_stock_status(m.quantity, m.minStock)
+            m.status = get_stock_status(m.quantity, m.minStock, m.expiryDate)
             await save_medicines(meds)
             log_activity(f"Restocked medicine ID {med_id} by {amount}")
             return m
@@ -605,7 +617,7 @@ async def dispense_medicine(med_id: int, amount: int, current_user: User = Depen
             if m.quantity < amount:
                 raise HTTPException(status_code=400, detail="Insufficient stock")
             m.quantity -= amount
-            m.status = get_stock_status(m.quantity, m.minStock)
+            m.status = get_stock_status(m.quantity, m.minStock, m.expiryDate)
             await save_medicines(meds)
             log_activity(f"Dispensed medicine ID {med_id} amount {amount}")
             await log_activity_to_db(current_user.username, "DISPENSE_MEDICINE", f"Dispensed {amount} units of {m.name} (ID: {med_id})")
@@ -738,14 +750,13 @@ async def get_alerts_enhanced(current_user: User = Depends(get_current_user)):
     
     for med in meds:
         should_alert = False
-        status_reason = med.status
         days_remaining = None
         
-        # Check Stock
-        if med.status in ["Low Stock", "Critical"]:
+        # Check Stock or Expiry status
+        if med.status in ["Low Stock", "Critical", "Expiring Soon"]:
             should_alert = True
             
-        # Check Expiry
+        # Check Expiry details for daysRemaining field
         try:
             # Assuming YYYY-MM-DD
             expiry = datetime.strptime(med.expiryDate, "%Y-%m-%d")
@@ -779,6 +790,12 @@ async def get_alerts_enhanced(current_user: User = Depends(get_current_user)):
             ))
             
     return alerts
+
+@app.get("/medicines/expiring", response_model=List[Medicine])
+async def get_expiring_medicines(current_user: User = Depends(get_current_user)):
+    """Fetch medicines that are expiring soon (within 90 days)"""
+    meds = await load_medicines()
+    return [m for m in meds if m.status == "Expiring Soon"]
 
 @app.get("/supplier/alerts", dependencies=[Depends(require_role(["supplier"]))], response_model=List[Alert])
 async def get_supplier_alerts(current_user: User = Depends(get_current_user)):
