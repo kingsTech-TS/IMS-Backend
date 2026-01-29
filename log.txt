@@ -41,3 +41,33 @@
 [2026-01-22 21:28:45] User admin updated login details
 [2026-01-22 21:28:45] User admin logged in as admin
 [2026-01-22 21:28:45] User admin updated login details
+[2026-01-28 21:17:53] User admin logged in as admin
+[2026-01-28 21:17:54] Added medicine: ExpiringSoonMed (Supplier: None)
+[2026-01-28 21:17:54] Deleted medicine ID 3
+[2026-01-28 21:17:55] Added medicine: ExpiredMed (Supplier: None)
+[2026-01-28 21:17:56] Deleted medicine ID 4
+[2026-01-28 21:17:57] Added medicine: InvalidSupplierMed (Supplier: supplier1)
+[2026-01-28 21:17:58] Deleted medicine ID 5
+[2026-01-29 12:56:32] User agbacist logged in as pharmacist
+[2026-01-29 12:56:36] User admin logged in as admin
+[2026-01-29 12:57:08] User agbacist logged in as pharmacist
+[2026-01-29 12:57:11] User admin logged in as admin
+[2026-01-29 13:01:24] User agbacist logged in as pharmacist
+[2026-01-29 13:02:35] User agbacist logged in as pharmacist
+[2026-01-29 13:02:38] Updated medicine ID 1
+[2026-01-29 13:02:41] Updated medicine ID 1
+[2026-01-29 13:02:43] Pharmacist agbacist sent restock request for Codin to supplier1
+[2026-01-29 13:02:44] User admin logged in as admin
+[2026-01-29 13:02:47] Restocked medicine ID 1 by 100
+[2026-01-29 13:40:06] User admin logged in as admin
+[2026-01-29 13:40:09] Added medicine: VerificationMed (Supplier: supplier1)
+[2026-01-29 13:40:09] User agbacist logged in as pharmacist
+[2026-01-29 13:40:10] Pharmacist agbacist sent restock request for VerificationMed to supplier1
+[2026-01-29 13:40:11] User supplier1 logged in as supplier
+[2026-01-29 13:40:13] Deleted medicine ID 6
+[2026-01-29 13:42:00] User admin logged in as admin
+[2026-01-29 13:42:05] Added medicine: VerificationMed (Supplier: supplier1)
+[2026-01-29 13:42:05] User agbacist logged in as pharmacist
+[2026-01-29 13:42:06] Pharmacist agbacist sent restock request for VerificationMed to supplier1
+[2026-01-29 13:42:16] User supplier1 logged in as supplier
+[2026-01-29 13:42:19] Deleted medicine ID 7

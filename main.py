@@ -15,6 +15,8 @@ from motor.motor_asyncio import AsyncIOMotorClient
 import cloudinary
 import cloudinary.uploader
 from dotenv import load_dotenv
+import smtplib
+from email.mime.text import MIMEText
 
 # Load environment variables
 load_dotenv()
@@ -43,6 +45,7 @@ db = client.get_database("inventory_db")
 medicines_collection = db.get_collection("medicines")
 users_collection = db.get_collection("users")
 activities_collection = db.get_collection("activities")
+messages_collection = db.get_collection("messages")
 
 # Cloudinary Configuration
 if not all([CLOUDINARY_NAME, CLOUDINARY_KEY, CLOUDINARY_SECRET]):
@@ -166,6 +169,17 @@ class Alert(BaseModel):
     timestamp: str
     daysRemaining: Optional[int] = None
 
+class Message(BaseModel):
+    id: Optional[str] = None
+    sender: str
+    receiver: str
+    content: str
+    timestamp: str
+
+class SendMessageRequest(BaseModel):
+    receiver: str
+    content: str
+
 
 # Helpers
 def get_timestamp():
@@ -192,6 +206,8 @@ def get_stock_status(quantity: int, min_stock: int = 30, expiry_date: str = "N/A
             now = datetime.now()
             expiry = datetime.strptime(expiry_date, "%Y-%m-%d")
             days_remaining = (expiry - now).days
+            if days_remaining <= 0:
+                return "Expired"
             if days_remaining <= 90:
                 return "Expiring Soon"
         except ValueError:
@@ -208,6 +224,34 @@ def get_stock_status(quantity: int, min_stock: int = 30, expiry_date: str = "N/A
         return "Low Stock"
     else:
         return "In Stock"
+
+async def send_email(to_email: str, subject: str, body: str):
+    """Sends an email to the supplier (mocked if SMTP settings are missing)"""
+    SMTP_SERVER = os.getenv("SMTP_SERVER")
+    SMTP_PORT = os.getenv("SMTP_PORT")
+    SMTP_USER = os.getenv("SMTP_USER")
+    SMTP_PASS = os.getenv("SMTP_PASS")
+
+    if not all([SMTP_SERVER, SMTP_PORT, SMTP_USER, SMTP_PASS]):
+        # Mocking: log to a file instead
+        log_entry = f"--- EMAIL LOG ---\nTo: {to_email}\nSubject: {subject}\nBody: {body}\n------------------\n"
+        with open("email_log.txt", "a") as f:
+            f.write(log_entry)
+        print(f"SMTP credentials missing. Email to {to_email} logged to email_log.txt")
+        return
+
+    try:
+        msg = MIMEText(body)
+        msg['Subject'] = subject
+        msg['From'] = SMTP_USER
+        msg['To'] = to_email
+
+        with smtplib.SMTP(SMTP_SERVER, int(SMTP_PORT)) as server:
+            server.starttls()
+            server.login(SMTP_USER, SMTP_PASS)
+            server.send_message(msg)
+    except Exception as e:
+        print(f"Failed to send email: {e}")
 
 # Helper for MongoDB Migration
 async def migrate_data():
@@ -319,7 +363,8 @@ async def get_current_user(token: str = Depends(oauth2_scheme)):
 
 def require_role(allowed_roles: List[str]):
     def role_checker(current_user: User = Depends(get_current_user)):
-        if current_user.role not in allowed_roles:
+        user_role = current_user.role.strip().lower()
+        if user_role not in [role.strip().lower() for role in allowed_roles]:
             raise HTTPException(status_code=403, detail="Operation not permitted for this user role")
         return current_user
     return role_checker
@@ -416,6 +461,7 @@ async def get_medicines_status(current_user: User = Depends(get_current_user)):
     """
     meds = await load_medicines()
     status_report = {
+        "Expired": [m for m in meds if m.status == "Expired"],
         "Critical": [m for m in meds if m.status == "Critical"],
         "Low Stock": [m for m in meds if m.status == "Low Stock"],
         "Expiring Soon": [m for m in meds if m.status == "Expiring Soon"],
@@ -532,6 +578,13 @@ async def add_medicine(med: MedicineCreate, current_user: User = Depends(get_cur
     if med.price < 0:
         raise HTTPException(status_code=400, detail="Price cannot be negative")
 
+    # Validate Supplier
+    if med.supplier:
+        all_users = await load_users()
+        supplier_exists = any(u.username == med.supplier and u.role == "supplier" for u in all_users)
+        if not supplier_exists:
+            raise HTTPException(status_code=400, detail=f"Supplier '{med.supplier}' is not a registered supplier")
+
     meds = await load_medicines()
     next_id = 1
     if meds:
@@ -557,13 +610,20 @@ async def add_medicine(med: MedicineCreate, current_user: User = Depends(get_cur
     log_activity(f"Added medicine: {med.name} (Supplier: {med.supplier})")
     return new_med
 
-@app.put("/medicines/{med_id}", dependencies=[Depends(require_role(["admin"]))], response_model=Medicine)
+@app.put("/medicines/{med_id}", dependencies=[Depends(require_role(["admin", "pharmacist"]))], response_model=Medicine)
 async def update_medicine(med_id: int, med_update: MedicineCreate, current_user: User = Depends(get_current_user)):
     if med_update.quantity < 0:
         raise HTTPException(status_code=400, detail="Quantity cannot be negative")
     if med_update.price < 0:
         raise HTTPException(status_code=400, detail="Price cannot be negative")
-        
+    
+    # Validate Supplier
+    if med_update.supplier:
+        all_users = await load_users()
+        supplier_exists = any(u.username == med_update.supplier and u.role == "supplier" for u in all_users)
+        if not supplier_exists:
+            raise HTTPException(status_code=400, detail=f"Supplier '{med_update.supplier}' is not a registered supplier")
+            
     meds = await load_medicines()
     for i, m in enumerate(meds):
         if m.id == med_id:
@@ -597,11 +657,33 @@ async def delete_medicine(med_id: int, current_user: User = Depends(get_current_
     log_activity(f"Deleted medicine ID {med_id}")
     return {"message": "Medicine deleted successfully"}
 
-@app.put("/medicines/{med_id}/restock", dependencies=[Depends(require_role(["admin", "supplier"]))])
+@app.put("/medicines/{med_id}/restock", dependencies=[Depends(require_role(["admin", "supplier", "pharmacist"]))])
 async def restock_medicine(med_id: int, amount: int, current_user: User = Depends(get_current_user)):
     meds = await load_medicines()
     for m in meds:
         if m.id == med_id:
+            # If pharmacist, handle as a notification request
+            if current_user.role == "pharmacist":
+                if not m.supplier:
+                    raise HTTPException(status_code=400, detail="No supplier listed. Please list a supplier for this medicine first.")
+                
+                # Fetch supplier email
+                all_users = await load_users()
+                supplier_user = next((u for u in all_users if u.username == m.supplier and u.role == "supplier"), None)
+                
+                notification_msg = f"We are out of this {m.name} and we need to restock {amount}, get back to us soon if it's available"
+                
+                # Log activity as an alert/notification
+                await log_activity_to_db(current_user.username, "RESTOCK_REQUEST", f"To {m.supplier}: {notification_msg}")
+                log_activity(f"Pharmacist {current_user.username} sent restock request for {m.name} to {m.supplier}")
+                
+                # Send email if supplier has one
+                if supplier_user and supplier_user.email:
+                    await send_email(supplier_user.email, f"Restock Request: {m.name}", notification_msg)
+                
+                return {"message": "Restock request sent to supplier", "medicine": m.name, "supplier": m.supplier}
+
+            # If admin or supplier, update quantity directly
             m.quantity += amount
             m.status = get_stock_status(m.quantity, m.minStock, m.expiryDate)
             await save_medicines(meds)
@@ -735,7 +817,46 @@ async def get_activities(current_user: User = Depends(get_current_user), limit: 
         activities.append(Activity(**doc))
     return activities
 
-# Alert Endpoints
+# Chat Endpoints
+
+@app.post("/messages", dependencies=[Depends(require_role(["admin", "pharmacist", "supplier"]))])
+async def send_chat_message(req: SendMessageRequest, current_user: User = Depends(get_current_user)):
+    """Send a message to another user"""
+    # Check if receiver exists
+    all_users = await load_users()
+    receiver_exists = any(u.username == req.receiver for u in all_users)
+    if not receiver_exists:
+        raise HTTPException(status_code=404, detail=f"Receiver '{req.receiver}' not found")
+
+    message = Message(
+        sender=current_user.username,
+        receiver=req.receiver,
+        content=req.content,
+        timestamp=get_timestamp()
+    )
+    
+    res = await messages_collection.insert_one(message.dict(exclude={"id"}))
+    return {"message": "Message sent", "id": str(res.inserted_id)}
+
+@app.get("/messages/{with_user}", response_model=List[Message], dependencies=[Depends(require_role(["admin", "pharmacist", "supplier"]))])
+async def get_chat_history(with_user: str, current_user: User = Depends(get_current_user)):
+    """Fetch conversation history between the current user and another user"""
+    query = {
+        "$or": [
+            {"sender": current_user.username, "receiver": with_user},
+            {"sender": with_user, "receiver": current_user.username}
+        ]
+    }
+    
+    cursor = messages_collection.find(query).sort("timestamp", 1)
+    messages = []
+    async for doc in cursor:
+        doc["id"] = str(doc.pop("_id"))
+        messages.append(Message(**doc))
+    
+    return messages
+
+# Existing Alert Endpoints
 
 @app.get("/alerts", dependencies=[Depends(require_role(["admin", "pharmacist"]))], response_model=List[Alert])
 async def get_alerts_enhanced(current_user: User = Depends(get_current_user)):
@@ -753,7 +874,7 @@ async def get_alerts_enhanced(current_user: User = Depends(get_current_user)):
         days_remaining = None
         
         # Check Stock or Expiry status
-        if med.status in ["Low Stock", "Critical", "Expiring Soon"]:
+        if med.status in ["Low Stock", "Critical", "Expiring Soon", "Expired"]:
             should_alert = True
             
         # Check Expiry details for daysRemaining field
