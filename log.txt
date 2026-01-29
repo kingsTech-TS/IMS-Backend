@@ -71,3 +71,7 @@
 [2026-01-29 13:42:06] Pharmacist agbacist sent restock request for VerificationMed to supplier1
 [2026-01-29 13:42:16] User supplier1 logged in as supplier
 [2026-01-29 13:42:19] Deleted medicine ID 7
+[2026-01-29 14:41:38] User admin logged in as admin
+[2026-01-29 14:41:39] User agbacist logged in as pharmacist
+[2026-01-29 14:41:39] User supplier1 logged in as supplier
+[2026-01-29 14:41:39] User supliz@gmail.com logged in as supplier

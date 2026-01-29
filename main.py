@@ -821,12 +821,26 @@ async def get_activities(current_user: User = Depends(get_current_user), limit: 
 
 @app.post("/messages", dependencies=[Depends(require_role(["admin", "pharmacist", "supplier"]))])
 async def send_chat_message(req: SendMessageRequest, current_user: User = Depends(get_current_user)):
-    """Send a message to another user"""
+    """Send a message to another user with role-based validation"""
     # Check if receiver exists
     all_users = await load_users()
-    receiver_exists = any(u.username == req.receiver for u in all_users)
-    if not receiver_exists:
+    receiver_user = next((u for u in all_users if u.username == req.receiver), None)
+    if not receiver_user:
         raise HTTPException(status_code=404, detail=f"Receiver '{req.receiver}' not found")
+
+    sender_role = current_user.role.strip().lower()
+    receiver_role = receiver_user.role.strip().lower()
+
+    # Permission Validation
+    if sender_role == "supplier":
+        # Suppliers can only chat with pharmacists and admins
+        if receiver_role not in ["pharmacist", "admin"]:
+            raise HTTPException(
+                status_code=403, 
+                detail="Suppliers are only permitted to message pharmacists and admins"
+            )
+    
+    # Pharmacists and Admins can chat with everyone (no restriction needed here)
 
     message = Message(
         sender=current_user.username,
@@ -840,11 +854,46 @@ async def send_chat_message(req: SendMessageRequest, current_user: User = Depend
 
 @app.get("/messages/{with_user}", response_model=List[Message], dependencies=[Depends(require_role(["admin", "pharmacist", "supplier"]))])
 async def get_chat_history(with_user: str, current_user: User = Depends(get_current_user)):
-    """Fetch conversation history between the current user and another user"""
+    """Fetch conversation history with role-based access validation"""
+    # Validate permission to see this history
+    all_users = await load_users()
+    with_user_obj = next((u for u in all_users if u.username == with_user), None)
+    
+    if not with_user_obj:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    sender_role = current_user.role.strip().lower()
+    other_role = with_user_obj.role.strip().lower()
+
+    if sender_role == "supplier":
+        if other_role not in ["pharmacist", "admin"]:
+            raise HTTPException(
+                status_code=403, 
+                detail="Suppliers can only access chat history with pharmacists and admins"
+            )
+
     query = {
         "$or": [
             {"sender": current_user.username, "receiver": with_user},
             {"sender": with_user, "receiver": current_user.username}
+        ]
+    }
+    
+    cursor = messages_collection.find(query).sort("timestamp", 1)
+    messages = []
+    async for doc in cursor:
+        doc["id"] = str(doc.pop("_id"))
+        messages.append(Message(**doc))
+    
+    return messages
+
+@app.get("/admin/messages/inspect/{user1}/{user2}", response_model=List[Message], dependencies=[Depends(require_role(["admin"]))])
+async def get_admin_inspection_history(user1: str, user2: str, current_user: User = Depends(get_current_user)):
+    """Admin only: Fetch conversation history between any two users"""
+    query = {
+        "$or": [
+            {"sender": user1, "receiver": user2},
+            {"sender": user2, "receiver": user1}
         ]
     }
     
