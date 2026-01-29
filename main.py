@@ -706,10 +706,18 @@ async def dispense_medicine(med_id: int, amount: int, current_user: User = Depen
             return m
     raise HTTPException(status_code=404, detail="Medicine not found")
 
-@app.get("/users", dependencies=[Depends(require_role(["admin"]))], response_model=List[UserProfile])
+@app.get("/users", dependencies=[Depends(require_role(["admin", "pharmacist", "supplier"]))], response_model=List[UserProfile])
 async def read_users(current_user: User = Depends(get_current_user)):
     users = await load_users()
-    return [UserProfile(**u.dict()) for u in users]
+    user_role = current_user.role.strip().lower()
+    
+    if user_role == "admin" or user_role == "pharmacist":
+        return [UserProfile(**u.dict()) for u in users]
+    elif user_role == "supplier":
+        # Suppliers can only see admins and pharmacists (who they can chat with)
+        return [UserProfile(**u.dict()) for u in users if u.role.strip().lower() in ["admin", "pharmacist"]]
+    
+    return []
 
 @app.get("/suppliers", dependencies=[Depends(require_role(["admin", "pharmacist"]))], response_model=List[UserPublic])
 async def get_suppliers(current_user: User = Depends(get_current_user)):

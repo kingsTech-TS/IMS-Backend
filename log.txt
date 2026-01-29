@@ -75,3 +75,6 @@
 [2026-01-29 14:41:39] User agbacist logged in as pharmacist
 [2026-01-29 14:41:39] User supplier1 logged in as supplier
 [2026-01-29 14:41:39] User supliz@gmail.com logged in as supplier
+[2026-01-29 16:31:39] User admin logged in as admin
+[2026-01-29 16:31:39] User agbacist logged in as pharmacist
+[2026-01-29 16:31:39] User supplier1 logged in as supplier
